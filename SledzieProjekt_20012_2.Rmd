@@ -1,0 +1,544 @@
+---
+title: "SledzieProjekt_20012"
+author: "Piotr Gurkowski 20012"
+output: html_document
+---
+Data generacji dokumentu: `r date()`
+
+```{r justify, echo=FALSE, message=FALSE}
+
+
+justify <- function(string, width=getOption('width'), 
+                    fill=c('random', 'right', 'left')) {
+    strs <- strwrap(string, width=width)
+    paste(fill_spaces(strs, width, match.arg(fill)), collapse="\n")
+}
+
+fill_spaces <- function(lines, width, fill) {
+    tokens <- strsplit(lines, '\\s+')
+    res <- lapply(head(tokens, -1L), function(x) {
+        nspace <- length(x)-1L
+        extra <- width - sum(nchar(x)) - nspace
+        reps <- extra %/% nspace
+        extra <- extra %% nspace
+        times <- rep.int(if (reps>0) reps+1L else 1L, nspace)
+        if (extra > 0) {
+            if (fill=='right') times[1:extra] <- times[1:extra]+1L
+            else if (fill=='left') 
+                times[(nspace-extra+1L):nspace] <- times[(nspace-extra+1L):nspace]+1L
+            else times[inds] <- times[(inds <- sample(nspace, extra))]+1L
+        }
+        spaces <- c('', unlist(lapply(times, formatC, x=' ', digits=NULL)))
+        paste(c(rbind(spaces, x)), collapse='')
+    })
+    c(res, paste(tail(tokens, 1L)[[1]], collapse = ' '))
+}
+```
+
+#Podsumowanie
+```{r podsumowanie, echo=FALSE, message=FALSE}
+cat(justify("Przeprowadzono analizę zmiany dł śledzi na przestrzeni 60 lat. Dane poddane analize wymagały wstępnego przygotowania. Okazało się, że  spora ich część wymagała uzupełniena ze względu na brakujące wartości. Ponieważ brakujących wartości było ok.20% postanowiono je uzupełnić wartościami modalnymi (najczęstszymi wartościami danego atrybutu) zamiast je po prostu pomijać, ponieważ mogłoby to mieć negatywny wpływ na dalszą analizę pozbycie się tak znacznej ilości informacji. Wstępna analiza wykazała, że dane są typu numerycznego, jednak dokładniejsze przyjżenie się ujawniło fakt, że dane kilku atrybutów pomino, że wyglądają na numeryczne są typu nominalnego co oznaczałoby nie branie ich pod uwagę m.in. w procesie korelacji a także utrudniało analizę zmienności tych argumentów na wykresach. Postanowiono zatem zamienić je na atrybuty typu numerycznego. Wspomniana wcześniej korelacja nie wykazała zbyt dużego podobieństwa pomiędzy atrybutami, więc nie usunięto żadnego z nich. Wyznaczono jeden dodatkowy atrybut bedący średnią z atrybutów  informujących o ilości planktonu. Dla dwóch atrybutów przeprowadzono normalizację ponieważ w znacznym stopniu odbiegały one od wartości pozostałych. Przeprowadzono także usuwanie wartości odstających zarówno przed normalizacją jak i po niej, jednak nie udało się całkowicie usunąć wartości odstających, ponieważ po każdym ich usuwaniu część z nich pozostawała, albo ujawiaiały się kolejne wartości odstające na skutek zmian w strukturze danych spowodowanych ich usuwaniem. Zbiór danych został także podzielony na dane uczące oraz testowe i została przeprowadzona regresja.",108))
+```
+
+ 1.  [Kod wyliczajacy wykorzystane biblioteki]
+ 2.  [Powtarzalność]
+ 3.  [Wczytanie danych]
+ 4.  [Kod przetwarzający brakujące dane]
+ 5.  [Zamiana danych nominalnych na numeryczne]
+ 6.  [Nowa kolumna 'plankt']
+ 7.  [Normalizacja]
+ 8.  [Usuwanie wartości odstających]
+ 9.  [Korelacja]
+ 10. [Interaktywny wykres]
+ 11. [Regresja]
+ 12. [Analiza]
+
+#Kod wyliczajacy wykorzystane biblioteki
+```{r biblioteki, message=FALSE, echo = TRUE, cache=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tabplot)
+library(caret)
+library(datasets)
+library(data.table)
+library(matrixStats)
+library(PerformanceAnalytics)
+library(corrplot)
+library(plotly)
+library(mlbench)
+library(caret)
+library(rpart)
+
+```
+
+```{r Załadowana wersja deplyer, cache=FALSE}
+dep_ver <-packageVersion("dplyr")
+```
+
+Wersja załadowanego pakietu dplyr: `r dep_ver`
+
+```{r zaladowane pakiety, cache=FALSE}
+packages<-(.packages())
+```
+
+Załadowane pakiety: `r packages`
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options("scipen"=999,digits=3)
+```
+
+
+
+```{r dffunc}
+dfInfo <- function(x, nameTable){
+df<-data.frame(x)
+out<-c("*****************************")
+out<-c(out,c(nameTable, " ","START INFO"))
+out<-c(out,str(df))
+out<-c(out,"liczba kolumn ",length(df))
+out<-c(out,"liczba wierszy ",nrow(df))
+out<-c(out, c(nameTable, " ","END INFO"))
+out<-c(out,c("*****************************"))
+out
+}
+
+dfsample<-function(x,ile){
+  xout<-x[sample(nrow(x),ile),]
+  return (xout)
+}
+
+getnumericcol<-function(dfx){
+  return(dfx[,sapply(dfx, is.numeric)])
+}
+normalize <- function(x) {
+    return ((x - min(x)) / (max(x) - min(x)))
+  }
+
+dfnormalize<-function(dfx){
+  return(as.data.frame(lapply(getnumericcol(dfx), normalize)))
+}
+```
+
+#Powtarzalność
+```{r powtarzalnosc seed, echo = TRUE}
+#Kod zapewniający powtarzalność wyników przy każdym uruchomieniu raportu na tych samych danych.
+set.seed(127)
+```
+
+#Wczytanie danych
+```{r wczytanie pliku, cache=TRUE}
+#Kod pozwalający wczytać dane z pliku.
+mydata <- read.csv("sledzie.csv")
+
+class(mydata)
+
+# find elements
+idx <- mydata == "?"
+# replace elements with NA
+is.na(mydata) <- idx
+```
+
+```{r moda function}
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+```
+
+```{r zmiana nazw kolumn}
+oldColNames<-colnames(mydata)
+colnames(mydata)<-c("nr","dl","gpl1g1","gpl1g2","gpl2g1","gpl2g2","gwidlg1","gwidlg2","poz_nar","roczny_nar","lpoz_nar","llzlowryb","tempC", "zasol", "mies", "oscyl")
+
+
+opisParam<-c(
+"numer pomiaru",  
+"długość złowionego śledzia [cm]",
+"dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 1]",
+"dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 2]",
+"dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 1]",
+"dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 2]",
+"dostępność planktonu [zagęszczenie widłonogów gat. 1]",
+"dostępność planktonu [zagęszczenie widłonogów gat. 2]",
+"natężenie połowów w regionie [ułamek pozostawionego narybku]",
+"roczny narybek [liczba śledzi]",
+"roczne roczne natężenie połowów w regionie [ułamek pozostawionego narybku]",
+"roczna liczba ryb złowionych w ramach połowu [liczba śledzi]",
+"temperatura przy powierzchni wody [stopnie Celsjusza]",
+"poziom zasolenia wody [Knudsen ppt]",
+"miesiąc połowu [numer miesiąca]",
+"oscylacja północnoatlantycka [mb]")
+
+classes<-sapply(mydata,class) 
+
+modaForAll<-sapply(mydata,Mode)
+
+typyKolumn<-sapply(classes,unique)
+
+newColNamesDf<-colnames(mydata)
+dfColNames<-data.frame("Pierwotne nazwy kolumn"=oldColNames, "Nowe nazwy kolumn"=newColNamesDf,"Typy kolumn"= typyKolumn, "Opis kolumn" = opisParam, "Moda->NA"=modaForAll)
+knitr::kable(dfColNames, row.names = FALSE)
+cat(justify("Zmieniono nazwy kolumn w zbiorze danych na bardziej kojarzące się z informacją jaką zawierają poszczególne atrybuty.", 108))
+```
+
+###Podsumowanie danych przed czyszczeniem
+
+```{r podsumowanie danych przed czyszczeniem}
+knitr::kable(summary(mydata))
+cat(justify("Można zaobserwować brakujące dane NA na powyższym podsumowaniu (wartości NA's).", 108))
+```
+
+#Kod przetwarzający brakujące dane
+```{r brakujace dane, cache=FALSE}
+#Kod przetwarzający brakujące dane.
+```
+
+```{r infoBeforeClear1, cache=TRUE}
+przedC<-nrow(mydata)
+```
+
+```{r clear1,cache=TRUE}
+good<-complete.cases(mydata)
+mydata_cc_NAremove<-mydata[good,]
+badRow<-sum(!good)
+```
+
+```{r infoAfterClear1, cache=TRUE}
+poC<-nrow(mydata_cc_NAremove)
+mydata_good<-mydata_cc_NAremove
+```
+
+```{r czyszczenieEndINfo, echo = FALSE, cache=TRUE}
+czyszczenieInfoTab<-data.frame("Liczba obserwacji przed czyszczeniem" = przedC,
+                                "Liczba obserwacji z NA" = badRow,
+                                "Liczba obserwacji po czyszczenu" = poC)
+knitr::kable(czyszczenieInfoTab)
+
+textInfo<-"Ze względu na konieczność usunięcia ponad 10000 (ok. 20% danych wejściowych) wierszy w przypadku wybrania metody pozbywania się wartości NA poprzez usuwanie związanych z nimi obserwacji, wybrano metodę uzupełniania brakujących wartości. Ze względu na charakter danych (dane typu nominalnego-factor zawierające dane numeryczne oraz numeryczne jednak 'zachowujące się' jak nominalne) postanowiono uzupełniać brakujące dane wartością mediany każdej kolumny."
+
+cat(justify(textInfo, 108))
+```
+
+```{r NA na medianę, cache=TRUE}
+
+
+for (var in 1:ncol(mydata)) {
+    if (class(mydata[,var])=="numeric") {
+        mydata[is.na(mydata[,var]),var] <- mean(mydata[,var], na.rm = TRUE)
+    } else if (class(mydata[,var]) %in% c("character", "factor")) {
+        mydata[is.na(mydata[,var]),var] <- Mode(mydata[,var])
+    }
+}
+
+good<-complete.cases(mydata)
+mydata_cc_NAremove<-mydata[good,]
+badRow<-sum(!good)
+
+mydata_cc<-mydata
+```
+Po uzupełnianiu wartością mediany - liczba wierszy z wartościami NA: `r badRow`
+
+###Podsumowanie zbioru danych po czyszczeniu
+
+```{r podsumowaniePoCzyszczeniu - uzupelnieniu NA, cache=TRUE}
+knitr::kable(summary(mydata_cc))
+```
+
+#####Po uzupełnieniu wartością modalną dane NA już nie występują (powyżej).
+
+```{r dane po czyszczeniu, cache=TRUE}
+knitr::kable(head(mydata_cc))
+```
+
+##Zamiana danych nominalnych na numeryczne
+```{r nominalne na numeryczne, cache=TRUE, fig.width=10}
+cat(justify("Część danych pomimo, że prezentuje wartości liczbowe to są one typu nominalnego. Uniemożliwi to wyznaczenie korelacji z ich wykorzystaniem. Także analiza takich danych nie umożliwia śledzenia tendencjii ich zmian w czasie (na poniższym wykresie między innymi kolumny: gpl1g1, gpl1g2, gpl2g1, gpl2g2, gwidlg1, gwidlg2. ",108))
+tableplot(mydata_cc)
+mydata_cc_wczytaneDaneCharToNum<-
+  transform(mydata_cc, 
+          #"gpl1g1","gpl1g2","gpl2g1","gpl2g2","gwidlg1","gwidlg2"
+          gpl1g1 = as.numeric(gpl1g1), 
+          gpl1g2 = as.numeric(gpl1g2),
+          gpl2g1 = as.numeric(gpl2g1), 
+          gpl2g2 = as.numeric(gpl2g2),
+          gwidlg1 = as.numeric(gwidlg1), 
+          gwidlg2 = as.numeric(gwidlg2),
+          tempC = as.numeric(tempC)
+          )
+
+cat(justify("Aby temu zaradzić zamieniono je na dane numeryczne, co umożliwi wyznaczenie corelacji tych danych z innymi oraz poprawi możliwość analizy ich zmian w czasie.",108))
+tableplot(mydata_cc_wczytaneDaneCharToNum)
+```
+
+##Nowa kolumna 'plankt'
+
+```{r nowa kolumna plankt, cache=FALSE}
+mydata_cc_wczytaneCharToNumPlankt<-mutate(mydata_cc_wczytaneDaneCharToNum, plankt=((gpl1g1+gpl1g2+gpl2g1+gpl2g2+gwidlg1+gwidlg2)))
+
+columnsWithPlankt <- c(newColNamesDf)
+cat(justify("Ponieważ kolumny gpl1g1, gpl1g2, gpl2g1, gpl2g2, gwidlg1, gwidlg2 prezentują podobny rodzaj danych połączono je w jedną dodatkową kolumnę: plankt, zawierającą uśrednioną informację o planktonie wyznaczoną jako sumę kolumn: gpl1g1, gpl1g2, gpl2g1, gpl2g2, gwidlg1, gwidlg2 podzieloną przez ich liczbę, czyli 6.",108))
+```
+
+##Usuwanie wartości odstających przed normalizacją
+
+```{r outliers remove before normalize, cache=TRUE, fig.width=10}
+cat(justify("Wartości odstające są przezentowane na wykresie jako punkty/małe kółka.",108))
+colWithPlankt1<-c(newColNamesDf,"plankt")
+
+boxplot(mydata_cc_wczytaneCharToNumPlankt[,colWithPlankt1,drop=TRUE],las=2)
+######remove outliers IRQ
+mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm <- mydata_cc_wczytaneCharToNumPlankt
+
+# wiersze do usunięcia
+Outliers <- c()
+outliersInfo <- data.frame(info=c("nazwa_col","liczba_out"))
+cat(justify("Prosta statystyka punktów odstających dla poszczególnych atrybutów.",108))
+# kolumny do usunięcia outlierów
+for(i in colWithPlankt1){
+  
+  # min/max
+  max <- quantile(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,i],0.75, na.rm=TRUE) + (IQR(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,i], na.rm=TRUE) * 1.5 )
+  min <- quantile(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,i],0.25, na.rm=TRUE) - (IQR(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,i], na.rm=TRUE) * 1.5 )
+  
+  idx <- which(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,i] < min | mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,i] > max)
+  
+  # Output the number of outliers in each variable
+  outliersInfo[,i]  <- c(i,length(idx))
+  # dodanie outlierów do listy
+  
+  Outliers <- c(Outliers, idx) 
+}
+
+# sortowanie
+Outliers <- sort(Outliers)
+
+# usunięcie outlierów
+mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm <- mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[-Outliers,]
+
+knitr::kable(outliersInfo)
+#######remove outliers IRQ
+boxplot(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm[,colWithPlankt1,drop=TRUE], las=2)
+cat(justify("Na dwóch powyższych wykresach widać, że różnią się one liczbą występujących 'punktów' dla poszczególnych atrybutów - usuwanie wartości odstających przyniosło poprawę w jakości danych.",108))
+```
+
+##Normalizacja
+```{r normalizacja, cache=TRUE, fig.width=10}
+boxplot(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm, las=2)
+cat(justify("Na powyższym wykresie dwie kolumny wyrażnie odstają wartościami od pozostały, dlatego przeprowadzimy dla nich normalizację",108))
+
+mydata_cc_bezNAcharToNumPlanktNORMALIZE11<- mydata_cc_wczytaneCharToNumPlankt %>% mutate_each_(funs(scale(.) %>% as.vector), vars=colWithPlankt1)#roczny_nar	llzlowryb
+
+mydata_cc_BezOut_bezNAcharToNumPlanktNORMALIZE11<- mydata_cc_wczytaneCharToNumPlankt %>% mutate_each_(funs(scale(.) %>% as.vector), vars=c("roczny_nar","llzlowryb"))#roczny_nar	llzlowryb
+boxplot(mydata_cc_BezOut_bezNAcharToNumPlanktNORMALIZE11, las=2)
+cat(justify("Pomineliśmy normalizację kolumny 'nr' co zaburza teraz wykres. Jednak nie będziemy jej normalizować, wyrysujemy rozkład danych  bez tej kolumny.",108))
+boxplot(select(mydata_cc_BezOut_bezNAcharToNumPlanktNORMALIZE11,-(nr)),las=2)
+cat(justify("Normalizacja odniosła skutek. Zmienne pozostają w podobnym zakresie.",108))
+```
+
+
+##Usuwanie wartości odstających
+
+```{r outliers remove, cache=TRUE, fig.width=10}
+
+boxplot(mydata_cc_bezNAcharToNumPlanktNORMALIZE11[,newColNamesDf,drop=TRUE],las=2)
+######remove outliers IRQ
+mydata_cc_BezOut_BezNACharToNumPlanktNorm11 <- mydata_cc_bezNAcharToNumPlanktNORMALIZE11
+
+# wiersze do usunięcia
+Outliers <- c()
+outliersInfo <- data.frame(info=c("nazwa_col","liczba_out"))
+# kolumny do usunięcia outlierów
+for(i in colWithPlankt1){
+  
+  # min/max
+  max <- quantile(mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,i],0.75, na.rm=TRUE) + (IQR(mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,i], na.rm=TRUE) * 1.5 )
+  min <- quantile(mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,i],0.25, na.rm=TRUE) - (IQR(mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,i], na.rm=TRUE) * 1.5 )
+  
+  idx <- which(mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,i] < min | mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,i] > max)
+  
+  # Output the number of outliers in each variable
+  outliersInfo[,i]  <- c(i,length(idx))
+  # dodanie outlierów do listy
+  
+  Outliers <- c(Outliers, idx) 
+}
+
+# sortowanie
+Outliers <- sort(Outliers)
+
+# usunięcie outlierów
+mydata_cc_BezOut_BezNACharToNumPlanktNorm11 <- mydata_cc_BezOut_BezNACharToNumPlanktNorm11[-Outliers,]
+
+knitr::kable(outliersInfo)
+#######remove outliers IRQ
+boxplot(mydata_cc_BezOut_BezNACharToNumPlanktNorm11[,newColNamesDf,drop=TRUE],las=2)
+```
+
+```{r podstawowe statystyki, cache=FALSE}
+#Sekcja podsumowująca rozmiar zbioru i podstawowe statystyki.
+```
+
+```{r szczegolowa analiza, cache=TRUE, fig.width=10}
+#Szczegółowa analiza wartości atrybutów (np. poprzez prezentację rozkładów wartości).
+colnames(mydata)<-c("nr","dl","gpl1g1","gpl1g2","gpl2g1","gpl2g2","gwidlg1","gwidlg2","poz_nar","roczny_nar","lpoz_nar","llzlowryb","tempC", "zasol", "mies", "oscyl")
+
+srWgLat<-mydata_cc_BezOut_BezNACharToNumPlanktNorm11 %>% group_by(roczny_nar) %>% summarize(mean=mean(dl))
+ggplot(data=srWgLat, aes(srWgLat$mean)) + 
+  geom_histogram(col="red", 
+                 fill="green", 
+                 alpha = .2) + 
+  labs(title="Średnia dł śledzi w kolejnych latach") +
+  labs(x="lata", y="dł")
+```
+
+
+```{r istotność, cache=TRUE}
+
+```
+#Korelacja
+
+Przeprowadzana dla danych numerycznych. Dla wartości współczynnika korelacji 0.7 i 0.9
+
+```{r korelacja, cache=TRUE, warning=FALSE, echo=FALSE, fig.width=10,fig.height=10}
+#Sekcja sprawdzająca korelacje między zmiennymi; sekcja ta powinna zawierać jakąś formę graficznej prezentacji korelacji.
+zmienneDospr<-mydata_cc_BezOut_bezNAcharToNumPlanktNORMALIZE11
+mydata_cc_numeric<-zmienneDospr[sapply(zmienneDospr, is.numeric)]
+cor_df<-cor(mydata_cc_numeric)
+
+col_to_remove070<-findCorrelation(cor_df, cutoff = .70, verbose = TRUE)
+
+knitr::kable(cor_df)
+
+col_to_remove090<-findCorrelation(cor_df, cutoff = .90, verbose = TRUE)
+
+knitr::kable(cor_df)
+
+dfColToRemove<-data.frame("cutOff=.09"=paste(col_to_remove090, collapse = ''), "cutoff=.70"=paste(col_to_remove070, collapse = ''))
+```
+
+```{r korelacja wykres 1, cache=TRUE, warning=FALSE, echo=FALSE, fig.width=10,fig.height=10}
+corrplot.mixed(cor_df)
+```
+
+```{r korelacjawykres 2, cache=TRUE, warning=FALSE, echo=FALSE, fig.width=10,fig.height=10}
+chart.Correlation(cor_df, histogram=TRUE, pch=19,method = "pearson" )
+
+correlationMatrix <- cor(mydata_cc_numeric)
+# summarize the correlation matrix
+#print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
+# print indexes of highly correlated attributes
+print(highlyCorrelated)
+highlyCorrelated
+
+```
+
+#Interaktywny wykres
+
+```{r interaktywny wykres, cache=FALSE, fig.width=10,fig.height=10}
+#Interaktywny wykres lub animacja prezentująca zmianę rozmiaru śledzi w czasie.
+p <- ggplot(dfsample(mydata_cc_BezOut_bezNAcharToNumPlanktNORMALIZE11,100), aes(nr, dl,
+                       color=tempC)) + 
+    geom_point()+geom_smooth(aes(colour = plankt, fill = poz_nar),se=FALSE)
+ggplotly(p)
+```
+
+#Regresja
+```{r regresja, cache=TRUE}
+#SekcjA próbująca stworzyć regresor przewidujący rozmiar śledzia (w tej sekcji należy wykorzystać wiedzę z pozostałych punktów oraz wykonać dodatkowe czynności, które mogą poprawić trafność predykcji); dobór parametrów modelu oraz oszacowanie jego skuteczności powinny zostać wykonane za pomocą techniki podziału zbioru na dane uczące, walidujące i testowe; trafność regresji powinna zostać oszacowana na podstawie miar R2R2 i RMSERMSE.
+
+regresionData <- dfsample(mydata_cc_BezOut_bezNAcharToNumPlanktNORMALIZE11,100)
+inTraining <-
+  createDataPartition(
+    # atrybut do stratyfikacji
+    y = select(regresionData, dl:plankt, -(gpl1g1:gwidlg2))$llzlowryb,#traktowany jako kolejne lata
+    # procent w zbiorze uczącym
+    p = .50,
+    # chcemy indeksy a nie listę
+    list = FALSE)
+
+training <- regresionData[ inTraining,]
+testingWalidating  <- regresionData[-inTraining,]
+
+ctrl <- trainControl(
+    # powtórzona ocena krzyżowa
+    method = "repeatedcv",
+    # liczba podziałów
+    number = 2,
+    # liczba powtórzeń
+    repeats = 5)
+
+fit <- train(dl ~ .,
+             data = training,
+             method = "rf",
+             trControl = ctrl,
+             # Paramter dla algorytmu uczącego
+             ntree = 10)
+
+```
+
+```{r wynik regresji, echo=TRUE, messages=FALSE}
+fit
+
+
+testing<-testingWalidating
+rfClasses <- predict(fit, newdata = testing)
+
+table(factor(rfClasses, levels=min(testing$dl):max(testing$dl)),factor(testing$dl, levels=min(testing$dl):max(testing$dl)))
+
+u = union(rfClasses, testing$dl)
+t = table(factor(rfClasses, u), factor(testing$dl, u))
+```
+
+```{r optymalizacja}
+rfGrid <- expand.grid(mtry = 10:30)
+gridCtrl <- trainControl(
+    method = "repeatedcv",
+    summaryFunction = twoClassSummary,
+    classProbs = FALSE,
+    number = 2,
+    repeats = 5)
+
+
+```
+
+```{r regresja 2}
+ mydata_cc_regresja<-dfsample(select(mydata_cc_BezOut_BezNACharToNumPlanktPrzedNorm, -nr),100)
+
+rf1 <- randomForest(dl~., data=mydata_cc_regresja, mtry=2, ntree=50, importance=TRUE)
+importance(rf1,type=1)
+library(party)
+cf1 <- cforest(dl~.,data=mydata_cc_regresja,control=cforest_unbiased(mtry=2,ntree=50))
+varimp(cf1)
+varimp(cf1,conditional=TRUE)
+
+ cat(justify("Określenie istotności atrybutów.",108))
+
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = gpl1g1)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = gpl1g2)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = gpl2g1)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = gpl2g2)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = gwidlg1)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = gwidlg2)) +   geom_point() +  geom_smooth(method = "lm")
+cat(justify("Jak można było przypuszczać im więcej planktonu tym większa długość śledzi co widać na powyższych wykresach na których przedstawiono zależność długości od ilości pożywienia.",108))
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = poz_nar)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = roczny_nar)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = lpoz_nar)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = tempC)) +   geom_point() +  geom_smooth(method = "lm")
+cat(justify("Im niższa temperatura tym większa długość śledzi.",108))
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = zasol)) +   geom_point() +  geom_smooth(method = "lm")
+ggplot(data = mydata_cc_regresja, aes(x = dl, y = oscyl)) +   geom_point() +  geom_smooth(method = "lm")
+cat(justify("Wartość zasolenia i oscylacji nie ma specjalnie wpływu na długość śledzi.",108))
+
+ #cor.test(mydata_cc_regresja$dl, mydata_cc_regresja$tempC)
+```
+
+#Analiza
+```{r analiza, cache=TRUE}
+cat(justify("Z analizy powyższych wykresów możana wywnioskować, że im wyższa temperatura tym długość śledzi mniejsza. Także pozostałe atrybuty , których wartość maleje wraz ze wzrostem długości śledzi, np. lpoz_nar",108))
+```
+
+
+
+
